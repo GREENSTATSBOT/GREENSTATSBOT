@@ -8,67 +8,117 @@ TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 API_KEY = os.environ["API_FOOTBALL_KEY"]
 
-# Para no gastar las 100 consultas/día
-MAX_PREDICCIONES = 15
+MAX_PREDICCIONES = 12
+MAX_ODDS = 5
+MIN_PROB = 55
 
-# Competiciones preferidas
-LIGAS_PRIORITARIAS = {
-    39,   # Premier League
-    140,  # LaLiga
-    135,  # Serie A
-    78,   # Bundesliga
-    61,   # Ligue 1
-    88,   # Eredivisie
-    94,   # Primeira Liga
-    40,   # Championship
-    2,    # Champions League
-    3,    # Europa League
-    848,  # Conference League
+LIGAS_TOP = {
+    39, 140, 135, 78, 61,
+    88, 94, 40, 2, 3, 848
 }
 
 
 def api_get(endpoint):
     url = f"https://v3.football.api-sports.io/{endpoint}"
 
-    request = urllib.request.Request(
+    req = urllib.request.Request(
         url,
         headers={"x-apisports-key": API_KEY}
     )
 
-    with urllib.request.urlopen(request, timeout=25) as response:
-        return json.loads(
-            response.read().decode("utf-8")
-        )
+    with urllib.request.urlopen(req, timeout=25) as r:
+        return json.loads(r.read().decode("utf-8"))
 
 
 def enviar_telegram(texto):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
-    datos = json.dumps({
+    data = json.dumps({
         "chat_id": CHAT_ID,
         "text": texto
     }).encode("utf-8")
 
-    request = urllib.request.Request(
+    req = urllib.request.Request(
         url,
-        data=datos,
+        data=data,
         headers={"Content-Type": "application/json"},
         method="POST"
     )
 
-    urllib.request.urlopen(request, timeout=20)
+    urllib.request.urlopen(req, timeout=20)
 
 
-def porcentaje(valor):
-    if valor is None:
-        return 0.0
-
+def pct(valor):
     try:
-        return float(
-            str(valor).replace("%", "").strip()
-        )
+        return float(str(valor).replace("%", "").strip())
     except:
         return 0.0
+
+
+def obtener_cuota_1x2(fixture_id, signo):
+    datos = api_get(f"odds?fixture={fixture_id}")
+
+    respuesta = datos.get("response", [])
+
+    if not respuesta:
+        return None
+
+    objetivo = {
+        "1": "Home",
+        "X": "Draw",
+        "2": "Away"
+    }.get(signo)
+
+    if not objetivo:
+        return None
+
+    mejores = []
+
+    for item in respuesta:
+        for bookmaker in item.get("bookmakers", []):
+
+            nombre_casa = bookmaker.get("name", "?")
+
+            for bet in bookmaker.get("bets", []):
+
+                bet_nombre = str(
+                    bet.get("name", "")
+                ).lower()
+
+                # Mercado Match Winner / 1X2
+                if (
+                    "match winner" not in bet_nombre
+                    and "1x2" not in bet_nombre
+                    and "winner" not in bet_nombre
+                ):
+                    continue
+
+                for value in bet.get("values", []):
+
+                    nombre = str(
+                        value.get("value", "")
+                    ).strip()
+
+                    if nombre.lower() != objetivo.lower():
+                        continue
+
+                    try:
+                        cuota = float(value.get("odd"))
+                    except:
+                        continue
+
+                    mejores.append({
+                        "cuota": cuota,
+                        "bookmaker": nombre_casa
+                    })
+
+    if not mejores:
+        return None
+
+    return max(
+        mejores,
+        key=lambda x: x["cuota"]
+    )
 
 
 def main():
@@ -79,60 +129,48 @@ def main():
 
     fecha = ahora.strftime("%Y-%m-%d")
 
-    # 1 consulta
     datos = api_get(
-        f"fixtures?date={fecha}"
-        f"&timezone=Europe/Madrid"
+        f"fixtures?date={fecha}&timezone=Europe/Madrid"
     )
 
-    todos = datos.get("response", [])
+    partidos = datos.get("response", [])
 
     futuros = []
 
-    for partido in todos:
+    for p in partidos:
 
         estado = (
-            partido
-            .get("fixture", {})
+            p.get("fixture", {})
             .get("status", {})
             .get("short")
         )
 
-        if estado not in ["NS", "TBD"]:
-            continue
+        if estado in ["NS", "TBD"]:
+            futuros.append(p)
 
-        futuros.append(partido)
-
-
-    # Primero colocamos las ligas importantes
     futuros.sort(
-        key=lambda p:
-        0 if p.get("league", {}).get("id")
-        in LIGAS_PRIORITARIAS
-        else 1
+        key=lambda p: (
+            0 if p.get("league", {}).get("id")
+            in LIGAS_TOP else 1
+        )
     )
-
 
     candidatos = []
 
-    consultados = 0
-    sin_prediccion = 0
+    pred_consultadas = 0
+    sin_pred = 0
     errores = 0
 
+    # -------------------------
+    # PREDICCIONES
+    # -------------------------
 
     for partido in futuros:
 
-        if consultados >= MAX_PREDICCIONES:
+        if pred_consultadas >= MAX_PREDICCIONES:
             break
 
-        fixture_id = (
-            partido
-            .get("fixture", {})
-            .get("id")
-        )
-
-        if not fixture_id:
-            continue
+        fixture_id = partido["fixture"]["id"]
 
         try:
 
@@ -140,188 +178,187 @@ def main():
                 f"predictions?fixture={fixture_id}"
             )
 
-            consultados += 1
+            pred_consultadas += 1
 
             respuesta = datos_pred.get(
                 "response", []
             )
 
             if not respuesta:
-                sin_prediccion += 1
+                sin_pred += 1
                 continue
 
-            pred = respuesta[0]
+            pred = respuesta[0]["predictions"]
 
-            prediction = pred.get(
-                "predictions", {}
-            )
-
-            percent = prediction.get(
+            porcentajes = pred.get(
                 "percent", {}
             )
 
-            home_p = porcentaje(
-                percent.get("home")
-            )
+            p1 = pct(porcentajes.get("home"))
+            px = pct(porcentajes.get("draw"))
+            p2 = pct(porcentajes.get("away"))
 
-            draw_p = porcentaje(
-                percent.get("draw")
-            )
+            local = partido["teams"]["home"]["name"]
+            visitante = partido["teams"]["away"]["name"]
 
-            away_p = porcentaje(
-                percent.get("away")
-            )
-
-
-            local = (
-                partido["teams"]["home"]["name"]
-            )
-
-            visitante = (
-                partido["teams"]["away"]["name"]
-            )
-
-            liga = (
-                partido["league"]["name"]
-            )
-
-
-            mercados = [
+            opciones = [
                 (
                     f"Gana {local}",
-                    home_p
+                    "1",
+                    p1
                 ),
                 (
                     "Empate",
-                    draw_p
+                    "X",
+                    px
                 ),
                 (
                     f"Gana {visitante}",
-                    away_p
-                ),
-                (
-                    f"{local} o empate",
-                    home_p + draw_p
-                ),
-                (
-                    f"{visitante} o empate",
-                    away_p + draw_p
+                    "2",
+                    p2
                 )
             ]
 
-
-            mejor_mercado = max(
-                mercados,
-                key=lambda x: x[1]
+            mercado, signo, prob = max(
+                opciones,
+                key=lambda x: x[2]
             )
 
-
-            under_over = prediction.get(
-                "under_over"
-            )
-
-            advice = prediction.get(
-                "advice"
-            )
-
+            if prob < MIN_PROB:
+                continue
 
             candidatos.append({
-
+                "fixture_id": fixture_id,
                 "partido":
                     f"{local} - {visitante}",
-
-                "liga": liga,
-
-                "mercado":
-                    mejor_mercado[0],
-
-                "prob":
-                    mejor_mercado[1],
-
-                "goles":
-                    under_over,
-
-                "consejo":
-                    advice
+                "liga":
+                    partido["league"]["name"],
+                "liga_top":
+                    partido["league"]["id"]
+                    in LIGAS_TOP,
+                "mercado": mercado,
+                "signo": signo,
+                "prob": prob,
+                "p1": p1,
+                "px": px,
+                "p2": p2,
+                "consejo": pred.get("advice"),
+                "goles": pred.get("under_over")
             })
-
 
         except Exception:
             errores += 1
 
-
     candidatos.sort(
-        key=lambda x: x["prob"],
+        key=lambda x: (
+            x["liga_top"],
+            x["prob"]
+        ),
         reverse=True
     )
 
-    top = candidatos[:10]
+    # Solo buscamos cuotas para los mejores
+    candidatos = candidatos[:MAX_ODDS]
 
+    picks = []
+    odds_consultadas = 0
+
+    # -------------------------
+    # CUOTAS + VALUE
+    # -------------------------
+
+    for candidato in candidatos:
+
+        try:
+
+            odds = obtener_cuota_1x2(
+                candidato["fixture_id"],
+                candidato["signo"]
+            )
+
+            odds_consultadas += 1
+
+            if not odds:
+                candidato["cuota"] = None
+                candidato["bookmaker"] = None
+                candidato["ev"] = None
+                picks.append(candidato)
+                continue
+
+            cuota = odds["cuota"]
+
+            prob_decimal = (
+                candidato["prob"] / 100
+            )
+
+            prob_implicita = (
+                1 / cuota
+            ) * 100
+
+            cuota_justa = (
+                1 / prob_decimal
+            )
+
+            ev = (
+                prob_decimal * cuota - 1
+            ) * 100
+
+            candidato["cuota"] = cuota
+            candidato["bookmaker"] = (
+                odds["bookmaker"]
+            )
+            candidato["prob_implicita"] = (
+                prob_implicita
+            )
+            candidato["cuota_justa"] = (
+                cuota_justa
+            )
+            candidato["ev"] = ev
+
+            picks.append(candidato)
+
+        except Exception:
+            errores += 1
+
+    # Primero, mayor value
+    picks.sort(
+        key=lambda x: (
+            x["ev"]
+            if x["ev"] is not None
+            else -999
+        ),
+        reverse=True
+    )
+
+    # -------------------------
+    # TELEGRAM
+    # -------------------------
 
     lineas = [
-
-        "🧠 GREENSTATS",
-
+        "💎 GREENSTATS V3 | VALUE",
         "",
-
         f"📅 {fecha}",
-
-        f"⚽ Partidos encontrados: "
-        f"{len(todos)}",
-
-        f"⏳ Próximos: "
-        f"{len(futuros)}",
-
-        f"🔎 Predicciones consultadas: "
-        f"{consultados}",
-
-        f"🚫 Sin predicción: "
-        f"{sin_prediccion}",
-
+        f"⚽ Partidos: {len(partidos)}",
+        f"🧠 Predicciones: {pred_consultadas}",
+        f"💰 Cuotas consultadas: {odds_consultadas}",
+        f"🚫 Sin predicción: {sin_pred}",
         f"⚠️ Errores: {errores}",
-
         ""
     ]
 
-
-    if not top:
+    if not picks:
 
         lineas.append(
-            "No hay predicciones "
-            "disponibles para los "
-            "partidos consultados."
+            "Hoy no hay candidatos "
+            "que superen el filtro."
         )
 
     else:
 
-        lineas.append(
-            "🏆 TOP GREENSTATS"
-        )
-
-        lineas.append("")
-
-
-        for i, pick in enumerate(top, 1):
-
-            prob = pick["prob"]
-
-
-            if prob >= 80:
-                nivel = "🔥 MUY ALTA"
-
-            elif prob >= 70:
-                nivel = "🟢 ALTA"
-
-            elif prob >= 60:
-                nivel = "🟡 MEDIA"
-
-            else:
-                nivel = "⚪ BAJA"
-
+        for i, pick in enumerate(picks, 1):
 
             lineas.append(
-                f"{i}️⃣ "
-                f"{pick['partido']}"
+                f"{i}️⃣ ⚽ {pick['partido']}"
             )
 
             lineas.append(
@@ -333,40 +370,85 @@ def main():
             )
 
             lineas.append(
-                f"📊 Probabilidad API: "
-                f"{prob:.1f}%"
+                f"🧠 Prob. modelo: "
+                f"{pick['prob']:.1f}%"
             )
 
             lineas.append(
-                f"⭐ {nivel}"
+                f"1️⃣ {pick['p1']:.0f}% | "
+                f"❎ {pick['px']:.0f}% | "
+                f"2️⃣ {pick['p2']:.0f}%"
             )
 
+            if pick["cuota"] is not None:
+
+                lineas.append(
+                    f"💰 Cuota: "
+                    f"{pick['cuota']:.2f}"
+                )
+
+                lineas.append(
+                    f"🏦 Casa: "
+                    f"{pick['bookmaker']}"
+                )
+
+                lineas.append(
+                    f"📉 Prob. cuota: "
+                    f"{pick['prob_implicita']:.1f}%"
+                )
+
+                lineas.append(
+                    f"⚖️ Cuota justa modelo: "
+                    f"{pick['cuota_justa']:.2f}"
+                )
+
+                lineas.append(
+                    f"💎 EV: "
+                    f"{pick['ev']:+.1f}%"
+                )
+
+                if pick["ev"] >= 10:
+                    lineas.append(
+                        "🔥 VALUE ALTO"
+                    )
+
+                elif pick["ev"] >= 5:
+                    lineas.append(
+                        "🟢 VALUE"
+                    )
+
+                elif pick["ev"] > 0:
+                    lineas.append(
+                        "🟡 VALUE PEQUEÑO"
+                    )
+
+                else:
+                    lineas.append(
+                        "🔴 SIN VALUE"
+                    )
+
+            else:
+
+                lineas.append(
+                    "💰 Sin cuota disponible"
+                )
 
             if pick["goles"]:
-
                 lineas.append(
-                    f"⚽ Tendencia goles: "
-                    f"{pick['goles']}"
+                    f"⚽ Goles: {pick['goles']}"
                 )
-
-
-            if pick["consejo"]:
-
-                lineas.append(
-                    f"🧠 Modelo: "
-                    f"{pick['consejo']}"
-                )
-
 
             lineas.append("")
 
-
-        lineas.append(
-            "⚠️ Son estimaciones "
-            "estadísticas, no resultados "
-            "garantizados."
-        )
-
+    lineas.extend([
+        "━━━━━━━━━━━━━━",
+        "⚠️ EV positivo no garantiza "
+        "que la apuesta gane.",
+        "",
+        "📌 Las cuotas mostradas son las "
+        "que API-Football tenga disponibles. "
+        "No asumimos que sean de Danz."
+    ])
 
     enviar_telegram(
         "\n".join(lineas)
@@ -374,13 +456,11 @@ def main():
 
 
 try:
-
     main()
 
 except Exception as error:
 
     enviar_telegram(
-        "❌ GREENSTATS\n\n"
-        f"Error general: "
-        f"{type(error).__name__}"
+        "❌ GREENSTATS V3\n\n"
+        f"Error: {type(error).__name__}"
     )
