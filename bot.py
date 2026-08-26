@@ -11,7 +11,8 @@ API_KEY = os.environ["API_FOOTBALL_KEY"]
 
 MAX_PREDICCIONES = 8
 MAX_ODDS = 3
-MIN_PROB = 55
+MIN_PROB = 70
+MIN_DIFERENCIA = 25
 
 LIGAS_TOP = {
     39,   # Premier League
@@ -273,7 +274,11 @@ def main():
             p2 = pct(
                 porcentajes.get("away")
             )
+            diferencia = abs(p1 - p2)
 
+            
+              
+    
             local = (
                 partido["teams"]
                 ["home"]["name"]
