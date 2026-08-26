@@ -1,6 +1,5 @@
 import os
 import json
-import math
 import urllib.request
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -9,7 +8,23 @@ TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 API_KEY = os.environ["API_FOOTBALL_KEY"]
 
-MAX_PARTIDOS = 20
+# Para no gastar las 100 consultas/día
+MAX_PREDICCIONES = 15
+
+# Competiciones preferidas
+LIGAS_PRIORITARIAS = {
+    39,   # Premier League
+    140,  # LaLiga
+    135,  # Serie A
+    78,   # Bundesliga
+    61,   # Ligue 1
+    88,   # Eredivisie
+    94,   # Primeira Liga
+    40,   # Championship
+    2,    # Champions League
+    3,    # Europa League
+    848,  # Conference League
+}
 
 
 def api_get(endpoint):
@@ -21,7 +36,9 @@ def api_get(endpoint):
     )
 
     with urllib.request.urlopen(request, timeout=25) as response:
-        return json.loads(response.read().decode("utf-8"))
+        return json.loads(
+            response.read().decode("utf-8")
+        )
 
 
 def enviar_telegram(texto):
@@ -42,178 +59,192 @@ def enviar_telegram(texto):
     urllib.request.urlopen(request, timeout=20)
 
 
-def poisson(k, lam):
-    return math.exp(-lam) * (lam ** k) / math.factorial(k)
+def porcentaje(valor):
+    if valor is None:
+        return 0.0
 
-
-def ultimos_partidos(team_id):
-    datos = api_get(
-        f"fixtures?team={team_id}&last=5&timezone=Europe/Madrid"
-    )
-
-    return datos.get("response", [])
-
-
-def medias_equipo(partidos, team_id):
-    if len(partidos) < 3:
-        return None
-
-    goles_favor = []
-    goles_contra = []
-    ambos_marcan = 0
-
-    for partido in partidos:
-        home_id = partido["teams"]["home"]["id"]
-
-        goles_home = partido["goals"]["home"]
-        goles_away = partido["goals"]["away"]
-
-        if goles_home is None or goles_away is None:
-            continue
-
-        if home_id == team_id:
-            gf = goles_home
-            gc = goles_away
-        else:
-            gf = goles_away
-            gc = goles_home
-
-        goles_favor.append(gf)
-        goles_contra.append(gc)
-
-        if gf > 0 and gc > 0:
-            ambos_marcan += 1
-
-    if len(goles_favor) < 3:
-        return None
-
-    return {
-        "gf": sum(goles_favor) / len(goles_favor),
-        "gc": sum(goles_contra) / len(goles_contra),
-        "btts": ambos_marcan / len(goles_favor)
-    }
-
-
-def calcular_probabilidades(local, visitante):
-    lambda_local = (
-        local["gf"] + visitante["gc"]
-    ) / 2
-
-    lambda_visitante = (
-        visitante["gf"] + local["gc"]
-    ) / 2
-
-    # Evita valores absurdos
-    lambda_local = max(0.20, min(lambda_local, 3.5))
-    lambda_visitante = max(0.20, min(lambda_visitante, 3.5))
-
-    total = lambda_local + lambda_visitante
-
-    p0 = poisson(0, total)
-    p1 = poisson(1, total)
-    p2 = poisson(2, total)
-    p3 = poisson(3, total)
-
-    over15 = 1 - (p0 + p1)
-    over25 = 1 - (p0 + p1 + p2)
-    under35 = p0 + p1 + p2 + p3
-
-    local_cero = poisson(0, lambda_local)
-    visitante_cero = poisson(0, lambda_visitante)
-
-    btts_poisson = (
-        1
-        - local_cero
-        - visitante_cero
-        + (local_cero * visitante_cero)
-    )
-
-    # Mezclamos Poisson y frecuencia reciente de BTTS
-    btts_forma = (
-        local["btts"] + visitante["btts"]
-    ) / 2
-
-    btts = (
-        btts_poisson * 0.7
-        + btts_forma * 0.3
-    )
-
-    return {
-        "Más de 1.5 goles": over15,
-        "Más de 2.5 goles": over25,
-        "Menos de 3.5 goles": under35,
-        "Ambos marcan - Sí": btts
-    }
+    try:
+        return float(
+            str(valor).replace("%", "").strip()
+        )
+    except:
+        return 0.0
 
 
 def main():
-    ahora = datetime.now(ZoneInfo("Europe/Madrid"))
+
+    ahora = datetime.now(
+        ZoneInfo("Europe/Madrid")
+    )
+
     fecha = ahora.strftime("%Y-%m-%d")
 
+    # 1 consulta
     datos = api_get(
-        f"fixtures?date={fecha}&timezone=Europe/Madrid"
+        f"fixtures?date={fecha}"
+        f"&timezone=Europe/Madrid"
     )
 
     todos = datos.get("response", [])
 
-    # Quitamos partidos ya finalizados/cancelados
-    partidos = []
+    futuros = []
 
     for partido in todos:
-        estado = partido["fixture"]["status"]["short"]
 
-        if estado in ["NS", "TBD"]:
-            partidos.append(partido)
+        estado = (
+            partido
+            .get("fixture", {})
+            .get("status", {})
+            .get("short")
+        )
 
-    partidos = partidos[:MAX_PARTIDOS]
+        if estado not in ["NS", "TBD"]:
+            continue
+
+        futuros.append(partido)
+
+
+    # Primero colocamos las ligas importantes
+    futuros.sort(
+        key=lambda p:
+        0 if p.get("league", {}).get("id")
+        in LIGAS_PRIORITARIAS
+        else 1
+    )
+
 
     candidatos = []
 
-    analizados = 0
-    sin_datos = 0
+    consultados = 0
+    sin_prediccion = 0
     errores = 0
-    consultas = 1
 
-    for partido in partidos:
+
+    for partido in futuros:
+
+        if consultados >= MAX_PREDICCIONES:
+            break
+
+        fixture_id = (
+            partido
+            .get("fixture", {})
+            .get("id")
+        )
+
+        if not fixture_id:
+            continue
+
         try:
-            local = partido["teams"]["home"]
-            visitante = partido["teams"]["away"]
 
-            historial_local = ultimos_partidos(local["id"])
-            consultas += 1
-
-            historial_visitante = ultimos_partidos(visitante["id"])
-            consultas += 1
-
-            stats_local = medias_equipo(
-                historial_local,
-                local["id"]
+            datos_pred = api_get(
+                f"predictions?fixture={fixture_id}"
             )
 
-            stats_visitante = medias_equipo(
-                historial_visitante,
-                visitante["id"]
+            consultados += 1
+
+            respuesta = datos_pred.get(
+                "response", []
             )
 
-            if not stats_local or not stats_visitante:
-                sin_datos += 1
+            if not respuesta:
+                sin_prediccion += 1
                 continue
 
-            analizados += 1
+            pred = respuesta[0]
 
-            probs = calcular_probabilidades(
-                stats_local,
-                stats_visitante
+            prediction = pred.get(
+                "predictions", {}
             )
 
-            for mercado, probabilidad in probs.items():
-                candidatos.append({
-                    "partido":
-                        f"{local['name']} - {visitante['name']}",
-                    "liga": partido["league"]["name"],
-                    "mercado": mercado,
-                    "prob": probabilidad * 100
-                })
+            percent = prediction.get(
+                "percent", {}
+            )
+
+            home_p = porcentaje(
+                percent.get("home")
+            )
+
+            draw_p = porcentaje(
+                percent.get("draw")
+            )
+
+            away_p = porcentaje(
+                percent.get("away")
+            )
+
+
+            local = (
+                partido["teams"]["home"]["name"]
+            )
+
+            visitante = (
+                partido["teams"]["away"]["name"]
+            )
+
+            liga = (
+                partido["league"]["name"]
+            )
+
+
+            mercados = [
+                (
+                    f"Gana {local}",
+                    home_p
+                ),
+                (
+                    "Empate",
+                    draw_p
+                ),
+                (
+                    f"Gana {visitante}",
+                    away_p
+                ),
+                (
+                    f"{local} o empate",
+                    home_p + draw_p
+                ),
+                (
+                    f"{visitante} o empate",
+                    away_p + draw_p
+                )
+            ]
+
+
+            mejor_mercado = max(
+                mercados,
+                key=lambda x: x[1]
+            )
+
+
+            under_over = prediction.get(
+                "under_over"
+            )
+
+            advice = prediction.get(
+                "advice"
+            )
+
+
+            candidatos.append({
+
+                "partido":
+                    f"{local} - {visitante}",
+
+                "liga": liga,
+
+                "mercado":
+                    mejor_mercado[0],
+
+                "prob":
+                    mejor_mercado[1],
+
+                "goles":
+                    under_over,
+
+                "consejo":
+                    advice
+            })
+
 
         except Exception:
             errores += 1
@@ -224,62 +255,73 @@ def main():
         reverse=True
     )
 
-    # Máximo una selección por partido
-    top = []
-    usados = set()
-
-    for candidato in candidatos:
-        if candidato["partido"] in usados:
-            continue
-
-        usados.add(candidato["partido"])
-        top.append(candidato)
-
-        if len(top) >= 10:
-            break
+    top = candidatos[:10]
 
 
     lineas = [
+
         "🧠 GREENSTATS",
+
         "",
+
         f"📅 {fecha}",
-        f"⚽ Partidos disponibles: {len(todos)}",
-        f"🔎 Revisados: {len(partidos)}",
-        f"✅ Analizados: {analizados}",
-        f"🚫 Sin datos suficientes: {sin_datos}",
+
+        f"⚽ Partidos encontrados: "
+        f"{len(todos)}",
+
+        f"⏳ Próximos: "
+        f"{len(futuros)}",
+
+        f"🔎 Predicciones consultadas: "
+        f"{consultados}",
+
+        f"🚫 Sin predicción: "
+        f"{sin_prediccion}",
+
         f"⚠️ Errores: {errores}",
-        f"📡 Consultas API aprox.: {consultas}",
+
         ""
     ]
 
 
     if not top:
+
         lineas.append(
-            "No se ha podido generar ningún "
-            "pronóstico estadístico hoy."
+            "No hay predicciones "
+            "disponibles para los "
+            "partidos consultados."
         )
 
     else:
+
         lineas.append(
-            "🏆 TOP ESTADÍSTICO DEL DÍA"
+            "🏆 TOP GREENSTATS"
         )
 
         lineas.append("")
 
+
         for i, pick in enumerate(top, 1):
+
             prob = pick["prob"]
+
 
             if prob >= 80:
                 nivel = "🔥 MUY ALTA"
+
             elif prob >= 70:
                 nivel = "🟢 ALTA"
+
             elif prob >= 60:
                 nivel = "🟡 MEDIA"
+
             else:
                 nivel = "⚪ BAJA"
 
+
             lineas.append(
-                f"{i}️⃣ {pick['partido']}"
+                f"{i}️⃣ "
+                f"{pick['partido']}"
             )
 
             lineas.append(
@@ -291,31 +333,52 @@ def main():
             )
 
             lineas.append(
-                f"📊 Prob. modelo: {prob:.1f}%"
+                f"📊 Probabilidad API: "
+                f"{prob:.1f}%"
             )
 
             lineas.append(
                 f"⭐ {nivel}"
             )
 
+
+            if pick["goles"]:
+
+                lineas.append(
+                    f"⚽ Tendencia goles: "
+                    f"{pick['goles']}"
+                )
+
+
+            if pick["consejo"]:
+
+                lineas.append(
+                    f"🧠 Modelo: "
+                    f"{pick['consejo']}"
+                )
+
+
             lineas.append("")
 
 
         lineas.append(
-            "⚠️ Estimaciones estadísticas, "
-            "no garantías de resultado."
+            "⚠️ Son estimaciones "
+            "estadísticas, no resultados "
+            "garantizados."
         )
 
 
-    mensaje = "\n".join(lineas)
-
-    enviar_telegram(mensaje)
+    enviar_telegram(
+        "\n".join(lineas)
+    )
 
 
 try:
+
     main()
 
 except Exception as error:
+
     enviar_telegram(
         "❌ GREENSTATS\n\n"
         f"Error general: "
