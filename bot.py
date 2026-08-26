@@ -1,3 +1,4 @@
+import urllib.error
 import os
 import json
 import urllib.request
@@ -8,15 +9,15 @@ TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 API_KEY = os.environ["API_FOOTBALL_KEY"]
 
-MAX_PREDICCIONES = 12
-MAX_ODDS = 5
+MAX_PREDICCIONES = 8
+MAX_ODDS = 3
+
 MIN_PROB = 55
 
 LIGAS_TOP = {
     39, 140, 135, 78, 61,
     88, 94, 40, 2, 3, 848
 }
-
 
 def api_get(endpoint):
     url = f"https://v3.football.api-sports.io/{endpoint}"
@@ -26,9 +27,14 @@ def api_get(endpoint):
         headers={"x-apisports-key": API_KEY}
     )
 
-    with urllib.request.urlopen(req, timeout=25) as r:
-        return json.loads(r.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=25) as r:
+            return json.loads(r.read().decode("utf-8"))
 
+    except urllib.error.HTTPError as error:
+        if error.code == 429:
+            raise RuntimeError("API_LIMIT")
+        raise
 
 def enviar_telegram(texto):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -246,8 +252,13 @@ def main():
                 "goles": pred.get("under_over")
             })
 
-        except Exception:
-            errores += 1
+   except RuntimeError as error:
+    if str(error) == "API_LIMIT":
+        break
+    errores += 1
+
+except Exception:
+    errores += 1 
 
     candidatos.sort(
         key=lambda x: (
@@ -317,8 +328,13 @@ def main():
 
             picks.append(candidato)
 
-        except Exception:
-            errores += 1
+        except RuntimeError as error:
+    if str(error) == "API_LIMIT":
+        break
+    errores += 1
+
+except Exception:
+    errores += 1
 
     # Primero, mayor value
     picks.sort(
