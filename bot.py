@@ -11,30 +11,44 @@ API_KEY = os.environ["API_FOOTBALL_KEY"]
 
 MAX_PREDICCIONES = 8
 MAX_ODDS = 3
-
 MIN_PROB = 55
 
 LIGAS_TOP = {
-    39, 140, 135, 78, 61,
-    88, 94, 40, 2, 3, 848
+    39,   # Premier League
+    140,  # LaLiga
+    135,  # Serie A
+    78,   # Bundesliga
+    61,   # Ligue 1
+    88,   # Eredivisie
+    94,   # Primeira Liga
+    40,   # Championship
+    2,    # Champions League
+    3,    # Europa League
+    848,  # Conference League
 }
+
 
 def api_get(endpoint):
     url = f"https://v3.football.api-sports.io/{endpoint}"
 
     req = urllib.request.Request(
         url,
-        headers={"x-apisports-key": API_KEY}
+        headers={
+            "x-apisports-key": API_KEY
+        }
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=25) as r:
-            return json.loads(r.read().decode("utf-8"))
+        with urllib.request.urlopen(req, timeout=25) as response:
+            return json.loads(
+                response.read().decode("utf-8")
+            )
 
     except urllib.error.HTTPError as error:
         if error.code == 429:
             raise RuntimeError("API_LIMIT")
         raise
+
 
 def enviar_telegram(texto):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -47,7 +61,9 @@ def enviar_telegram(texto):
     req = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json"
+        },
         method="POST"
     )
 
@@ -56,15 +72,21 @@ def enviar_telegram(texto):
 
 def pct(valor):
     try:
-        return float(str(valor).replace("%", "").strip())
-    except:
+        return float(
+            str(valor).replace("%", "").strip()
+        )
+    except Exception:
         return 0.0
 
 
 def obtener_cuota_1x2(fixture_id, signo):
-    datos = api_get(f"odds?fixture={fixture_id}")
+    datos = api_get(
+        f"odds?fixture={fixture_id}"
+    )
 
-    respuesta = datos.get("response", [])
+    respuesta = datos.get(
+        "response", []
+    )
 
     if not respuesta:
         return None
@@ -81,36 +103,56 @@ def obtener_cuota_1x2(fixture_id, signo):
     mejores = []
 
     for item in respuesta:
-        for bookmaker in item.get("bookmakers", []):
 
-            nombre_casa = bookmaker.get("name", "?")
+        for bookmaker in item.get(
+            "bookmakers", []
+        ):
 
-            for bet in bookmaker.get("bets", []):
+            nombre_casa = bookmaker.get(
+                "name", "?"
+            )
+
+            for bet in bookmaker.get(
+                "bets", []
+            ):
 
                 bet_nombre = str(
                     bet.get("name", "")
                 ).lower()
 
-                # Mercado Match Winner / 1X2
                 if (
-                    "match winner" not in bet_nombre
-                    and "1x2" not in bet_nombre
-                    and "winner" not in bet_nombre
+                    "match winner"
+                    not in bet_nombre
+                    and "1x2"
+                    not in bet_nombre
+                    and "winner"
+                    not in bet_nombre
                 ):
                     continue
 
-                for value in bet.get("values", []):
+                for value in bet.get(
+                    "values", []
+                ):
 
                     nombre = str(
                         value.get("value", "")
                     ).strip()
 
-                    if nombre.lower() != objetivo.lower():
+                    if (
+                        nombre.lower()
+                        != objetivo.lower()
+                    ):
                         continue
 
                     try:
-                        cuota = float(value.get("odd"))
-                    except:
+                        cuota = float(
+                            value.get("odd")
+                        )
+
+                    except (
+                        TypeError,
+                        ValueError
+                    ):
                         continue
 
                     mejores.append({
@@ -133,31 +175,41 @@ def main():
         ZoneInfo("Europe/Madrid")
     )
 
-    fecha = ahora.strftime("%Y-%m-%d")
-
-    datos = api_get(
-        f"fixtures?date={fecha}&timezone=Europe/Madrid"
+    fecha = ahora.strftime(
+        "%Y-%m-%d"
     )
 
-    partidos = datos.get("response", [])
+    datos = api_get(
+        f"fixtures?date={fecha}"
+        f"&timezone=Europe/Madrid"
+    )
+
+    partidos = datos.get(
+        "response", []
+    )
 
     futuros = []
 
-    for p in partidos:
+    for partido in partidos:
 
         estado = (
-            p.get("fixture", {})
+            partido
+            .get("fixture", {})
             .get("status", {})
             .get("short")
         )
 
         if estado in ["NS", "TBD"]:
-            futuros.append(p)
+            futuros.append(partido)
 
     futuros.sort(
-        key=lambda p: (
-            0 if p.get("league", {}).get("id")
-            in LIGAS_TOP else 1
+        key=lambda partido: (
+            0
+            if partido
+            .get("league", {})
+            .get("id")
+            in LIGAS_TOP
+            else 1
         )
     )
 
@@ -166,22 +218,29 @@ def main():
     pred_consultadas = 0
     sin_pred = 0
     errores = 0
+    limite_api = False
 
-    # -------------------------
+    # =========================
     # PREDICCIONES
-    # -------------------------
+    # =========================
 
     for partido in futuros:
 
-        if pred_consultadas >= MAX_PREDICCIONES:
+        if (
+            pred_consultadas
+            >= MAX_PREDICCIONES
+        ):
             break
 
-        fixture_id = partido["fixture"]["id"]
+        fixture_id = (
+            partido["fixture"]["id"]
+        )
 
         try:
 
             datos_pred = api_get(
-                f"predictions?fixture={fixture_id}"
+                f"predictions?"
+                f"fixture={fixture_id}"
             )
 
             pred_consultadas += 1
@@ -194,18 +253,36 @@ def main():
                 sin_pred += 1
                 continue
 
-            pred = respuesta[0]["predictions"]
+            pred = (
+                respuesta[0]
+                .get("predictions", {})
+            )
 
             porcentajes = pred.get(
                 "percent", {}
             )
 
-            p1 = pct(porcentajes.get("home"))
-            px = pct(porcentajes.get("draw"))
-            p2 = pct(porcentajes.get("away"))
+            p1 = pct(
+                porcentajes.get("home")
+            )
 
-            local = partido["teams"]["home"]["name"]
-            visitante = partido["teams"]["away"]["name"]
+            px = pct(
+                porcentajes.get("draw")
+            )
+
+            p2 = pct(
+                porcentajes.get("away")
+            )
+
+            local = (
+                partido["teams"]
+                ["home"]["name"]
+            )
+
+            visitante = (
+                partido["teams"]
+                ["away"]["name"]
+            )
 
             opciones = [
                 (
@@ -236,11 +313,14 @@ def main():
             candidatos.append({
                 "fixture_id": fixture_id,
                 "partido":
-                    f"{local} - {visitante}",
+                    f"{local} - "
+                    f"{visitante}",
                 "liga":
-                    partido["league"]["name"],
+                    partido["league"]
+                    ["name"],
                 "liga_top":
-                    partido["league"]["id"]
+                    partido["league"]
+                    ["id"]
                     in LIGAS_TOP,
                 "mercado": mercado,
                 "signo": signo,
@@ -248,17 +328,24 @@ def main():
                 "p1": p1,
                 "px": px,
                 "p2": p2,
-                "consejo": pred.get("advice"),
-                "goles": pred.get("under_over")
+                "consejo":
+                    pred.get("advice"),
+                "goles":
+                    pred.get(
+                        "under_over"
+                    )
             })
 
-   except RuntimeError as error:
-    if str(error) == "API_LIMIT":
-        break
-    errores += 1
+        except RuntimeError as error:
 
-except Exception:
-    errores += 1 
+            if str(error) == "API_LIMIT":
+                limite_api = True
+                break
+
+            errores += 1
+
+        except Exception:
+            errores += 1
 
     candidatos.sort(
         key=lambda x: (
@@ -268,75 +355,124 @@ except Exception:
         reverse=True
     )
 
-    # Solo buscamos cuotas para los mejores
-    candidatos = candidatos[:MAX_ODDS]
+    candidatos = (
+        candidatos[:MAX_ODDS]
+    )
 
     picks = []
     odds_consultadas = 0
 
-    # -------------------------
+    # =========================
     # CUOTAS + VALUE
-    # -------------------------
+    # =========================
 
-    for candidato in candidatos:
+    if not limite_api:
 
-        try:
+        for candidato in candidatos:
 
-            odds = obtener_cuota_1x2(
-                candidato["fixture_id"],
-                candidato["signo"]
-            )
+            try:
 
-            odds_consultadas += 1
+                odds = obtener_cuota_1x2(
+                    candidato[
+                        "fixture_id"
+                    ],
+                    candidato[
+                        "signo"
+                    ]
+                )
 
-            if not odds:
-                candidato["cuota"] = None
-                candidato["bookmaker"] = None
-                candidato["ev"] = None
-                picks.append(candidato)
-                continue
+                odds_consultadas += 1
 
-            cuota = odds["cuota"]
+                if not odds:
 
-            prob_decimal = (
-                candidato["prob"] / 100
-            )
+                    candidato[
+                        "cuota"
+                    ] = None
 
-            prob_implicita = (
-                1 / cuota
-            ) * 100
+                    candidato[
+                        "bookmaker"
+                    ] = None
 
-            cuota_justa = (
-                1 / prob_decimal
-            )
+                    candidato[
+                        "ev"
+                    ] = None
 
-            ev = (
-                prob_decimal * cuota - 1
-            ) * 100
+                    picks.append(
+                        candidato
+                    )
 
-            candidato["cuota"] = cuota
-            candidato["bookmaker"] = (
-                odds["bookmaker"]
-            )
-            candidato["prob_implicita"] = (
-                prob_implicita
-            )
-            candidato["cuota_justa"] = (
-                cuota_justa
-            )
-            candidato["ev"] = ev
+                    continue
 
+                cuota = odds["cuota"]
+
+                prob_decimal = (
+                    candidato["prob"]
+                    / 100
+                )
+
+                prob_implicita = (
+                    1 / cuota
+                ) * 100
+
+                cuota_justa = (
+                    1 / prob_decimal
+                )
+
+                ev = (
+                    prob_decimal
+                    * cuota
+                    - 1
+                ) * 100
+
+                candidato[
+                    "cuota"
+                ] = cuota
+
+                candidato[
+                    "bookmaker"
+                ] = odds[
+                    "bookmaker"
+                ]
+
+                candidato[
+                    "prob_implicita"
+                ] = prob_implicita
+
+                candidato[
+                    "cuota_justa"
+                ] = cuota_justa
+
+                candidato[
+                    "ev"
+                ] = ev
+
+                picks.append(
+                    candidato
+                )
+
+            except RuntimeError as error:
+
+                if (
+                    str(error)
+                    == "API_LIMIT"
+                ):
+                    limite_api = True
+                    break
+
+                errores += 1
+
+            except Exception:
+                errores += 1
+
+    # Si no hubo cuotas por límite,
+    # al menos conservamos candidatos
+    if not picks and candidatos:
+        for candidato in candidatos:
+            candidato["cuota"] = None
+            candidato["bookmaker"] = None
+            candidato["ev"] = None
             picks.append(candidato)
 
-        except RuntimeError as error:
-    if str(error) == "API_LIMIT":
-        break
-    errores += 1
-
-except Exception:
-    errores += 1
-
-    # Primero, mayor value
     picks.sort(
         key=lambda x: (
             x["ev"]
@@ -346,21 +482,39 @@ except Exception:
         reverse=True
     )
 
-    # -------------------------
+    # =========================
     # TELEGRAM
-    # -------------------------
+    # =========================
 
     lineas = [
         "💎 GREENSTATS V3 | VALUE",
         "",
         f"📅 {fecha}",
         f"⚽ Partidos: {len(partidos)}",
-        f"🧠 Predicciones: {pred_consultadas}",
-        f"💰 Cuotas consultadas: {odds_consultadas}",
-        f"🚫 Sin predicción: {sin_pred}",
+        (
+            "🧠 Predicciones "
+            f"consultadas: "
+            f"{pred_consultadas}"
+        ),
+        (
+            "💰 Cuotas "
+            f"consultadas: "
+            f"{odds_consultadas}"
+        ),
+        (
+            "🚫 Sin predicción: "
+            f"{sin_pred}"
+        ),
         f"⚠️ Errores: {errores}",
         ""
     ]
+
+    if limite_api:
+        lineas.extend([
+            "🛑 Límite diario de API "
+            "alcanzado.",
+            ""
+        ])
 
     if not picks:
 
@@ -371,10 +525,14 @@ except Exception:
 
     else:
 
-        for i, pick in enumerate(picks, 1):
+        for i, pick in enumerate(
+            picks,
+            1
+        ):
 
             lineas.append(
-                f"{i}️⃣ ⚽ {pick['partido']}"
+                f"{i}️⃣ ⚽ "
+                f"{pick['partido']}"
             )
 
             lineas.append(
@@ -386,40 +544,43 @@ except Exception:
             )
 
             lineas.append(
-                f"🧠 Prob. modelo: "
+                "🧠 Prob. modelo: "
                 f"{pick['prob']:.1f}%"
             )
 
             lineas.append(
-                f"1️⃣ {pick['p1']:.0f}% | "
-                f"❎ {pick['px']:.0f}% | "
-                f"2️⃣ {pick['p2']:.0f}%"
+                f"1️⃣ {pick['p1']:.0f}%"
+                f" | ❎ {pick['px']:.0f}%"
+                f" | 2️⃣ {pick['p2']:.0f}%"
             )
 
-            if pick["cuota"] is not None:
+            if (
+                pick["cuota"]
+                is not None
+            ):
 
                 lineas.append(
-                    f"💰 Cuota: "
+                    "💰 Cuota: "
                     f"{pick['cuota']:.2f}"
                 )
 
                 lineas.append(
-                    f"🏦 Casa: "
+                    "🏦 Casa: "
                     f"{pick['bookmaker']}"
                 )
 
                 lineas.append(
-                    f"📉 Prob. cuota: "
+                    "📉 Prob. cuota: "
                     f"{pick['prob_implicita']:.1f}%"
                 )
 
                 lineas.append(
-                    f"⚖️ Cuota justa modelo: "
+                    "⚖️ Cuota justa modelo: "
                     f"{pick['cuota_justa']:.2f}"
                 )
 
                 lineas.append(
-                    f"💎 EV: "
+                    "💎 EV: "
                     f"{pick['ev']:+.1f}%"
                 )
 
@@ -446,24 +607,40 @@ except Exception:
             else:
 
                 lineas.append(
-                    "💰 Sin cuota disponible"
+                    "💰 Sin cuota "
+                    "disponible"
                 )
 
             if pick["goles"]:
+
                 lineas.append(
-                    f"⚽ Goles: {pick['goles']}"
+                    "⚽ Goles: "
+                    f"{pick['goles']}"
+                )
+
+            if pick["consejo"]:
+
+                lineas.append(
+                    "🧠 Consejo API: "
+                    f"{pick['consejo']}"
                 )
 
             lineas.append("")
 
     lineas.extend([
         "━━━━━━━━━━━━━━",
-        "⚠️ EV positivo no garantiza "
-        "que la apuesta gane.",
+        (
+            "⚠️ EV positivo no "
+            "garantiza que la apuesta "
+            "gane."
+        ),
         "",
-        "📌 Las cuotas mostradas son las "
-        "que API-Football tenga disponibles. "
-        "No asumimos que sean de Danz."
+        (
+            "📌 Las cuotas son las que "
+            "API-Football tenga "
+            "disponibles. No asumimos "
+            "que sean de Danz."
+        )
     ])
 
     enviar_telegram(
@@ -478,5 +655,6 @@ except Exception as error:
 
     enviar_telegram(
         "❌ GREENSTATS V3\n\n"
-        f"Error: {type(error).__name__}"
+        f"Error: "
+        f"{type(error).__name__}"
     )
