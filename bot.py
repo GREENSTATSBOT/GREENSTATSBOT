@@ -212,13 +212,13 @@ def obtener_cuota_1x2(fixture_id, signo):
         return None
 
     return max(mejores, key=lambda x: x["cuota"])
+    
 
-
-    def main():
-        print("INICIANDO BOT")
-        enviar_telegram("✅ PRUEBA GREENSTATS: Telegram conectado")
-        ahora = datetime.now(ZoneInfo("Europe/Madrid"))
-        fecha = ahora.strftime("%Y-%m-%d")
+def main():
+    print("INICIANDO BOT")
+    enviar_telegram("✅ PRUEBA GREENSTATS: Telegram conectado")
+    ahora = datetime.now(ZoneInfo("Europe/Madrid"))
+    fecha = ahora.strftime("%Y-%m-%d")
 
     datos = api_get(
         f"fixtures?date={fecha}&timezone=Europe/Madrid"
