@@ -214,8 +214,8 @@ def obtener_cuota_1x2(fixture_id, signo):
     return max(mejores, key=lambda x: x["cuota"])
 
 
-def main():
-        print("INICIANDO BOT")
+    def main():
+    print("INICIANDO BOT")
     enviar_telegram("✅ PRUEBA GREENSTATS: Telegram conectado")
     ahora = datetime.now(ZoneInfo("Europe/Madrid"))
     fecha = ahora.strftime("%Y-%m-%d")
